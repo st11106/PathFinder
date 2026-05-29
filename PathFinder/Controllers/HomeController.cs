@@ -26,13 +26,14 @@ namespace PathFinder.Controllers
             IFormFile metadataFile,
             string waypointsJson,
             int cellSize = 10,
-            int robotRadius = 2,
+            double robotRadiusMeters = 0.25,
             double? finalAngleDeg = null)
         {
             if (image == null || image.Length == 0) return BadRequest("Immagine planimetria mancante.");
             if (metadataFile == null || metadataFile.Length == 0) return BadRequest("File metadati mancante.");
             if (string.IsNullOrEmpty(waypointsJson)) return BadRequest("Punti mancanti.");
             if (cellSize <= 0) cellSize = 1;
+            if (robotRadiusMeters < 0) robotRadiusMeters = 0;
 
             // 1. DESERIALIZZAZIONE JSON (Punti multi-tappa)
             // L'opzione CaseInsensitive risolve i problemi nel caso nel DTO le variabili si chiamino X e Y
@@ -55,9 +56,19 @@ namespace PathFinder.Controllers
                 return BadRequest($"Errore metadati: {ex.Message}");
             }
 
+            // 3. CONVERSIONE RAGGIO DA METRI A CELLE
+            //    resolution = metri/pixel; cellSize = pixel/cella
+            //    celle = metri / (resolution * cellSize)
+            int robotRadiusCells = 0;
+            if (metadata.resolution > 0 && robotRadiusMeters > 0)
+            {
+                double metersPerCell = metadata.resolution * cellSize;
+                robotRadiusCells = (int)Math.Max(1, Math.Round(robotRadiusMeters / metersPerCell));
+            }
+
             var transformer = new CoordinateTransformer(metadata);
 
-            // 3. TRASFORMAZIONE DELL'ANGOLO FINALE
+            // 4. TRASFORMAZIONE DELL'ANGOLO FINALE
             double? canvasFinalAngleRad = null;
             if (finalAngleDeg.HasValue)
             {
@@ -65,7 +76,7 @@ namespace PathFinder.Controllers
                 canvasFinalAngleRad = -amrFinalAngleRad;
             }
 
-            // 4. CALCOLO PATH
+            // 5. CALCOLO PATH
             var targetCells = inputPoints
                 .Select(p => new Coordinate(p.X / cellSize, p.Y / cellSize))
                 .ToList();
@@ -75,10 +86,10 @@ namespace PathFinder.Controllers
                 imageStream,
                 targetCells,
                 cellSize,
-                robotRadius,
+                robotRadiusCells,
                 canvasFinalAngleRad);
 
-            // 5. DOPPIO OUTPUT (Canvas + AMR)
+            // 6. DOPPIO OUTPUT (Canvas + AMR)
             var finalResult = finalPoses.Select(p =>
             {
                 double pixelX = (p.X * cellSize) + (cellSize / 2.0);
@@ -99,7 +110,7 @@ namespace PathFinder.Controllers
                 };
             }).ToList();
 
-            return Json(new { success = true, path = finalResult });
+            return Json(new { success = true, path = finalResult, robotRadiusCells = robotRadiusCells });
         }
     }
 }
