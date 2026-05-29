@@ -19,8 +19,9 @@
             <input type="number" id="cellSizeInput" class="form-control" value="10" min="1" title="Definisce la dimensione logica della cella per A*" />
         </div>
         <div class="col-md-2">
-            <label class="form-label text-muted small">Raggio AMR (Celle)</label>
-            <input type="number" id="robotRadiusInput" class="form-control" value="2" min="0" title="Dilatazione ostacoli in celle" />
+            <label class="form-label text-muted small">Raggio Robot (metri)</label>
+            <input type="number" id="robotRadiusInput" class="form-control" value="0.25" min="0" step="0.01" title="Raggio fisico del robot in metri. Verrà convertito in celle usando la risoluzione della mappa." />
+            <small id="radiusCellsHint" class="text-muted" style="display:none;"></small>
         </div>
         <div class="col-md-2">
             <label class="form-label text-muted small">Orientamento Fin. (°)</label>
@@ -101,13 +102,50 @@
             reader.readAsDataURL(file);
         });
 
+        // Risoluzione (metri/pixel) letta dai metadati ROS, usata per l'anteprima celle.
+        let mapResolution = null;
+        const radiusCellsHint = document.getElementById('radiusCellsHint');
+
         metaInput.addEventListener('change', function(e) {
             const file = e.target.files[0];
             if (file) {
                 metaFile = file;
                 console.log("Metadati caricati:", metaFile.name);
+
+                // Leggiamo la risoluzione per mostrare l'anteprima del raggio in celle
+                const reader = new FileReader();
+                reader.onload = function(ev) {
+                    try {
+                        const meta = JSON.parse(ev.target.result);
+                        mapResolution = meta.resolution;
+                        updateRadiusHint();
+                    } catch (err) {
+                        console.warn("Impossibile leggere la risoluzione dai metadati:", err);
+                    }
+                };
+                reader.readAsText(file);
             }
         });
+
+        // Mostra all'utente a quante celle corrisponde il raggio in metri inserito.
+        // Replica la stessa formula del backend: celle = metri / (resolution * cellSize)
+        function updateRadiusHint() {
+            const meters = parseFloat(robotRadiusInput.value);
+            const cellSize = parseInt(cellSizeInput.value) || 1;
+
+            if (!mapResolution || mapResolution <= 0 || isNaN(meters) || meters <= 0) {
+                radiusCellsHint.style.display = 'none';
+                return;
+            }
+
+            const metersPerCell = mapResolution * cellSize;
+            const cells = Math.max(1, Math.round(meters / metersPerCell));
+            radiusCellsHint.innerText = `\u2248 ${cells} cell${cells === 1 ? 'a' : 'e'} (${metersPerCell.toFixed(3)} m/cella)`;
+            radiusCellsHint.style.display = 'block';
+        }
+
+        robotRadiusInput.addEventListener('input', updateRadiusHint);
+        cellSizeInput.addEventListener('input', updateRadiusHint);
 
         // --- 2. GESTIONE CLICK SUL CANVAS (MULTI-TAPPA) ---
 
@@ -175,7 +213,9 @@
             formData.append('waypointsJson', JSON.stringify(pointsArray));
 
             formData.append('cellSize', cellSizeInput.value || 10);
-            formData.append('robotRadius', robotRadiusInput.value || 2);
+            // Il backend si aspetta il raggio in METRI (parametro 'robotRadiusMeters')
+            // e lo converte internamente in celle tramite la risoluzione dei metadati.
+            formData.append('robotRadiusMeters', robotRadiusInput.value || 0.25);
 
             // Angolo finale opzionale
             if (finalAngleInput.value !== "") {
