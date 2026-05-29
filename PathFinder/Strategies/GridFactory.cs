@@ -45,16 +45,57 @@ namespace PathFinder.Strategies
         }
 
         /// <summary>
+        /// Rimuove il rumore tipico delle mappe SLAM (pixel-ostacolo isolati).
+        /// Una cella resta ostacolo solo se ha almeno <paramref name="minNeighbors"/>
+        /// vicini (8-connessi) anch'essi ostacolo. Senza questo passaggio i puntini
+        /// isolati, una volta dilatati dall'inflation, sbarrano tutti i corridoi e
+        /// l'A* non trova alcun percorso.
+        /// </summary>
+        public int[,] DenoiseGrid(int[,] grid, int minNeighbors)
+        {
+            int width = grid.GetLength(0);
+            int height = grid.GetLength(1);
+            var cleaned = new int[width, height];
+
+            for (int y = 0; y < height; y++)
+            {
+                for (int x = 0; x < width; x++)
+                {
+                    if (grid[x, y] <= 200) { cleaned[x, y] = 0; continue; }
+
+                    int neighbors = 0;
+                    for (int dy = -1; dy <= 1; dy++)
+                    {
+                        for (int dx = -1; dx <= 1; dx++)
+                        {
+                            if (dx == 0 && dy == 0) continue;
+                            int nx = x + dx, ny = y + dy;
+                            if (nx >= 0 && nx < width && ny >= 0 && ny < height && grid[nx, ny] > 200)
+                                neighbors++;
+                        }
+                    }
+
+                    cleaned[x, y] = neighbors >= minNeighbors ? 255 : 0;
+                }
+            }
+
+            return cleaned;
+        }
+
+        /// <summary>
         /// Dilata gli ostacoli (inflation) in base al raggio del robot.
-        /// Implementazione O(N) basata su Distance Transform (Chamfer 3-4) anziché
-        /// O(N * R^2) come nella versione precedente: per ogni cella calcoliamo in due
-        /// passate la distanza approssimata dall'ostacolo più vicino, poi assegniamo:
+        /// Prima applica un denoising del rumore SLAM, poi usa una Distance Transform
+        /// (Chamfer 3-4) a due passate, O(N) anziché O(N * R^2), assegnando:
         ///   - 255 (zona letale / non percorribile) se dist &lt;= robotRadiusCells
         ///   - un costo decrescente 1..200 nella fascia di inflation
         ///   - 0 (libero) oltre la fascia di inflation
         /// </summary>
         public int[,] InflateGrid(int[,] rawGrid, int robotRadiusCells)
         {
+            // Pulizia del rumore SLAM prima della dilatazione. minNeighbors=2 rimuove
+            // i puntini isolati e i frammenti da 1-2 pixel senza erodere i muri reali.
+            rawGrid = DenoiseGrid(rawGrid, 2);
+
             int width = rawGrid.GetLength(0);
             int height = rawGrid.GetLength(1);
 
