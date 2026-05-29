@@ -44,77 +44,108 @@ namespace PathFinder.Strategies
             return rawGrid;
         }
 
+        /// <summary>
+        /// Dilata gli ostacoli (inflation) in base al raggio del robot.
+        /// Implementazione O(N) basata su Distance Transform (Chamfer 3-4) anziché
+        /// O(N * R^2) come nella versione precedente: per ogni cella calcoliamo in due
+        /// passate la distanza approssimata dall'ostacolo più vicino, poi assegniamo:
+        ///   - 255 (zona letale / non percorribile) se dist &lt;= robotRadiusCells
+        ///   - un costo decrescente 1..200 nella fascia di inflation
+        ///   - 0 (libero) oltre la fascia di inflation
+        /// </summary>
         public int[,] InflateGrid(int[,] rawGrid, int robotRadiusCells)
         {
-            if (robotRadiusCells <= 0) return rawGrid;
-
             int width = rawGrid.GetLength(0);
             int height = rawGrid.GetLength(1);
-            var inflatedGrid = new int[width, height];
 
+            if (robotRadiusCells <= 0)
+            {
+                // Nessuna dilatazione: restituiamo una copia normalizzata (0 libero / 255 ostacolo)
+                var passthrough = new int[width, height];
+                for (int y = 0; y < height; y++)
+                    for (int x = 0; x < width; x++)
+                        passthrough[x, y] = rawGrid[x, y] > 200 ? 255 : 0;
+                return passthrough;
+            }
+
+            // --- 1. DISTANCE TRANSFORM (Chamfer 3-4, due passate) ---
+            // Scaliamo le distanze x10 così la diagonale (~1.41) usa il peso 14 e
+            // l'ortogonale usa 10, coerente con i costi dell'A*. La distanza in celle
+            // si ottiene poi dividendo per 10.
+            const int ORTHO = 10;   // costo passo ortogonale
+            const int DIAG = 14;    // costo passo diagonale
+            const int INF = int.MaxValue / 4;
+
+            var dist = new int[width, height];
             for (int y = 0; y < height; y++)
                 for (int x = 0; x < width; x++)
-                    inflatedGrid[x, y] = 0; // Walkable
+                    dist[x, y] = rawGrid[x, y] > 200 ? 0 : INF;
 
-            int radiusSquared = robotRadiusCells * robotRadiusCells;
+            // Passata in avanti (top-left -> bottom-right)
+            for (int y = 0; y < height; y++)
+            {
+                for (int x = 0; x < width; x++)
+                {
+                    int d = dist[x, y];
+                    if (d == 0) continue;
 
-            // Definiamo un raggio di "inflation" per il decadimento della velocità,
-            // ad esempio pari a 3 volte il raggio del robot.
-            double inflationRadiusCells = robotRadiusCells * 3.0;
-            int inflationRadiusSquared = (int)(inflationRadiusCells * inflationRadiusCells);
+                    if (x > 0) d = Math.Min(d, dist[x - 1, y] + ORTHO);
+                    if (y > 0) d = Math.Min(d, dist[x, y - 1] + ORTHO);
+                    if (x > 0 && y > 0) d = Math.Min(d, dist[x - 1, y - 1] + DIAG);
+                    if (x < width - 1 && y > 0) d = Math.Min(d, dist[x + 1, y - 1] + DIAG);
+
+                    dist[x, y] = d;
+                }
+            }
+
+            // Passata all'indietro (bottom-right -> top-left)
+            for (int y = height - 1; y >= 0; y--)
+            {
+                for (int x = width - 1; x >= 0; x--)
+                {
+                    int d = dist[x, y];
+                    if (d == 0) continue;
+
+                    if (x < width - 1) d = Math.Min(d, dist[x + 1, y] + ORTHO);
+                    if (y < height - 1) d = Math.Min(d, dist[x, y + 1] + ORTHO);
+                    if (x < width - 1 && y < height - 1) d = Math.Min(d, dist[x + 1, y + 1] + DIAG);
+                    if (x > 0 && y < height - 1) d = Math.Min(d, dist[x - 1, y + 1] + DIAG);
+
+                    dist[x, y] = d;
+                }
+            }
+
+            // --- 2. APPLICAZIONE COSTI ---
+            // Fascia di inflation pari a 2x il raggio del robot: abbastanza per ottenere
+            // un decadimento graduale che tiene il robot lontano dai muri, senza chiudere
+            // del tutto i corridoi (la versione precedente usava 3x ed era troppo aggressiva).
+            double lethalDist = robotRadiusCells * 10.0;            // distanza scalata x10
+            double inflationDist = robotRadiusCells * 2.0 * 10.0;   // fine della fascia sfumata
+            double bandWidth = inflationDist - lethalDist;
+
+            var inflatedGrid = new int[width, height];
 
             for (int y = 0; y < height; y++)
             {
                 for (int x = 0; x < width; x++)
                 {
-                    if (rawGrid[x, y] > 200) // Consideriamo ostacolo originale
+                    int d = dist[x, y];
+
+                    if (d <= lethalDist)
                     {
+                        // Ostacolo originale o dentro il raggio rigido del robot -> non percorribile
                         inflatedGrid[x, y] = 255;
-
-                        int maxRadiusCheck = (int)Math.Ceiling(inflationRadiusCells);
-
-                        for (int dy = -maxRadiusCheck; dy <= maxRadiusCheck; dy++)
-                        {
-                            for (int dx = -maxRadiusCheck; dx <= maxRadiusCheck; dx++)
-                            {
-                                int distSquared = dx * dx + dy * dy;
-
-                                if (distSquared <= inflationRadiusSquared)
-                                {
-                                    int nx = x + dx;
-                                    int ny = y + dy;
-
-                                    if (nx >= 0 && nx < width && ny >= 0 && ny < height)
-                                    {
-                                        if (distSquared <= radiusSquared)
-                                        {
-                                            // 1. ZONA LETALE: Dentro il raggio rigido del robot
-                                            inflatedGrid[nx, ny] = 255;
-                                        }
-                                        else if (inflatedGrid[nx, ny] != 255)
-                                        {
-                                            // 2. ZONA SFUMATA: Calcoliamo un decadimento basato sulla distanza
-                                            double dist = Math.Sqrt(distSquared);
-
-                                            // Costo decresce da 200 (margine raggio robot) verso 0 (margine raggio inflation)
-                                            // y = 200 * (1 - (dist - R_robot) / (R_inflation - R_robot))
-                                            double costFactor = 1.0 - ((dist - robotRadiusCells) / (inflationRadiusCells - robotRadiusCells));
-
-                                            // Applichiamo una decadenza (clampato tra 1 e 200)
-                                            int newCost = (int)Math.Max(1, Math.Min(200, costFactor * 200));
-
-                                            // Applichiamo il costo maggiore:
-                                            // Se il nodo era già sfiorato da un altro ostacolo che imponeva
-                                            // un costo maggiore, manteniamo quello maggiore.
-                                            if (newCost > inflatedGrid[nx, ny])
-                                            {
-                                                inflatedGrid[nx, ny] = newCost;
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
+                    }
+                    else if (d <= inflationDist && bandWidth > 0)
+                    {
+                        // Zona sfumata: costo decresce da 200 (bordo letale) a 0 (fine fascia)
+                        double t = (d - lethalDist) / bandWidth; // 0..1
+                        int cost = (int)Math.Round(200 * (1.0 - t));
+                        inflatedGrid[x, y] = Math.Max(1, Math.Min(200, cost));
+                    }
+                    else
+                    {
+                        inflatedGrid[x, y] = 0; // Libero
                     }
                 }
             }

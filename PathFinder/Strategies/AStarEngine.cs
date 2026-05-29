@@ -10,12 +10,23 @@ namespace PathFinder.Strategies
             int width = grid.GetLength(0);
             int height = grid.GetLength(1);
 
-            // Consideriamo ostacolo se il costo supera 200 (valore di default per IsCostAllowed) 
-            // In un'app reale, questo dovrebbe essere letto dalla velocità / strategia o iniettato
-            if (!IsValid(start, width, height) || !IsValid(end, width, height) ||
-                grid[start.X, start.Y] > 200 || grid[end.X, end.Y] > 200)
-            {
+            if (!IsValid(start, width, height) || !IsValid(end, width, height))
                 return new List<Coordinate>();
+
+            // Se start o end cadono in una cella non percorribile (es. dentro l'inflation
+            // di un muro perché l'utente ha cliccato troppo vicino), agganciamo il punto
+            // alla cella libera più vicina invece di fallire subito.
+            if (grid[start.X, start.Y] > 200)
+            {
+                var snapped = FindNearestFree(grid, start, width, height);
+                if (snapped == null) return new List<Coordinate>();
+                start = snapped.Value;
+            }
+            if (grid[end.X, end.Y] > 200)
+            {
+                var snapped = FindNearestFree(grid, end, width, height);
+                if (snapped == null) return new List<Coordinate>();
+                end = snapped.Value;
             }
 
             var openQueue = new PriorityQueue<PathNode, int>();
@@ -104,6 +115,38 @@ namespace PathFinder.Strategies
         private bool IsValid(Coordinate c, int width, int height)
         {
             return c.X >= 0 && c.X < width && c.Y >= 0 && c.Y < height;
+        }
+
+        /// <summary>
+        /// Cerca con una BFS la cella percorribile (costo &lt;= 200) più vicina al punto dato.
+        /// Restituisce null se non ne trova entro un limite ragionevole.
+        /// </summary>
+        private Coordinate? FindNearestFree(int[,] grid, Coordinate origin, int width, int height)
+        {
+            var visited = new HashSet<Coordinate> { origin };
+            var queue = new Queue<Coordinate>();
+            queue.Enqueue(origin);
+
+            // Limite di sicurezza: non esploriamo all'infinito se l'area è tutta murata.
+            int maxNodes = Math.Min(width * height, 20000);
+            int processed = 0;
+
+            while (queue.Count > 0 && processed < maxNodes)
+            {
+                var c = queue.Dequeue();
+                processed++;
+
+                if (grid[c.X, c.Y] <= 200)
+                    return c;
+
+                foreach (var n in GetNeighbors(c, width, height))
+                {
+                    if (visited.Add(n))
+                        queue.Enqueue(n);
+                }
+            }
+
+            return null;
         }
 
         private bool IsDiagonal(Coordinate a, Coordinate b)
